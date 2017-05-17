@@ -3,7 +3,7 @@ from uber_rides.session import Session
 from uber_rides.client import UberRidesClient
 import requests
 import json
-
+import emoji
 
 # Google Places API
 search_key = "AIzaSyDtl_8f-gc1uITSV3QWIlCUsK7fFRBlZJs"
@@ -12,6 +12,9 @@ search_key = "AIzaSyDtl_8f-gc1uITSV3QWIlCUsK7fFRBlZJs"
 uber_svtoken = "oE9QMeV2R1o9zcBceOJ6cuD-TeQ5x-riTAGwAxou"
 session = Session(server_token=uber_svtoken)
 client = UberRidesClient(session)
+
+# Lyft
+lyft_clientToken = "gAAAAABZG6IA4Grs4Qm0YYWUcGNHhL6pblpPVFlUTio5MOb8_-w1cBPrV1xgBV7YgQH2HM2g7kg6MY043akfI1Talqxcv9pZNXQgJqLQ3fGp0Y-5NU14yUMFi7Iz0SiTcUDuso-ScAiEUOpku9VD23pAUNQpD3db6tQC62PqI3yLxK_YMd1MvcA="
 
 
 
@@ -24,11 +27,9 @@ class User:
         self.dest_lat       = -1
         self.dest_lng       = -1
         self.dest_addr      = ""
+        self.dest_title     = ""
         self.num_seat       = -1
-        self.U_price_range  = ""
-        self.L_price_range  = ""
-        self.uber_ETA       = -1
-        self.lyft_ETA       = -1
+
 
 
 
@@ -45,6 +46,7 @@ class User:
         self.dest_lat = get_info["results"][0]["geometry"]["location"]["lat"]
         self.dest_lng = get_info["results"][0]["geometry"]["location"]["lng"]
         self.dest_addr = get_info["results"][0]["formatted_address"]
+        self.dest_title = get_info["results"][0]["name"]
 
     def get_uber_info(self):
         # Get price info from Uber
@@ -58,14 +60,38 @@ class User:
         url = "https://api.uber.com/v1.2/estimates/time?"
         estimate_time = requests.get(url, headers=headers, params=params).json()["times"]
 
-        num_seat = self.num_seat
-        if (num_seat <= 2):
-            self.uber_ETA = estimate_time[0]["estimate"] / 60
-            self.U_price_range = estimate_price[0]["estimate"]
+        uber_dict = {}
 
+        uber_dict["UberPool_ETA"] = estimate_time[0]["estimate"] / 60
+        uber_dict["UberPool_Price"] = estimate_price[0]["estimate"]
+        uber_dict["UberX_ETA"] = estimate_time[1]["estimate"] / 60
+        uber_dict["UberX_Price"] = estimate_price[1]["estimate"]
+        uber_dict["UberXL_ETA"] = estimate_time[2]["estimate"] / 60
+        uber_dict["UberXL_Price"] = estimate_price[2]["estimate"]
 
+        return uber_dict
 
+    def get_lyft_info(self):
+        lyft_dict = {}
 
+        headers = {"Authorization": "Bearer {}".format(lyft_clientToken)}
+        params_ETA = {"lat": self.current_lat, "lng": self.current_lng}
+        url_ETA = "https://api.lyft.com/v1/eta?"
+        estimate_time = requests.get(url_ETA, headers=headers, params=params_ETA).json()["eta_estimates"]
+
+        lyft_dict["LyftLine_ETA"] = estimate_time[0]["eta_seconds"] / 60
+        lyft_dict["Lyft_ETA"] = estimate_time[1]["eta_seconds"] / 60
+        lyft_dict["LyftPlus_ETA"] = estimate_time[2]["eta_seconds"] / 60
+
+        params_price = {"start_lat": self.current_lat, "start_lng": self.current_lng,
+                        "end_lat": self.dest_lat, "end_lng": self.dest_lng}
+        url_price = "https://api.lyft.com/v1/cost?"
+        estimate_price = requests.get(url_price, headers=headers, params=params_price).json()["cost_estimates"]
+        lyft_dict["LyftLine_Price"] = "${}-{}".format(estimate_price[1]["estimated_cost_cents_min"]/100, estimate_price[1]["estimated_cost_cents_max"]/100)
+        lyft_dict["Lyft_Price"] = "${}-{}".format(estimate_price[2]["estimated_cost_cents_min"]/100, estimate_price[2]["estimated_cost_cents_max"]/100)
+        lyft_dict["LyftPlus_Price"] = "${}-{}".format(estimate_price[0]["estimated_cost_cents_min"]/100, estimate_price[0]["estimated_cost_cents_max"]/100)
+
+        return lyft_dict
 
 # Telegram Bot
 telegram_token = "338308635:AAFqrqtKH1xgRC5LncS3UPuGUgxVLRlzjkk"
@@ -81,7 +107,7 @@ def get_started(message):
     itembtn1 = telebot.types.KeyboardButton("Yes", request_location=True)
     itembtn2 = telebot.types.KeyboardButton("No I don't want to")
     markup.add(itembtn1, itembtn2)
-    msg = bot.send_message(message.chat.id, "What's up homie! Can you send me your current location?", reply_markup=markup)
+    msg = bot.send_message(message.chat.id, "Can you send me your current location?", reply_markup=markup)
     bot.register_next_step_handler(msg, process_current_location)
 
 
@@ -113,38 +139,34 @@ def process_destination(message):
         itembtn1 = telebot.types.KeyboardButton("Yes")
         itembtn2 = telebot.types.KeyboardButton("No")
         markup.add(itembtn1, itembtn2)
-        msg = bot.send_message(message.chat.id, "Is this the address?\n{}".format(user.dest_addr), reply_markup=markup)
-        bot.register_next_step_handler(msg, number_people)
+        bot.send_message(message.chat.id, "Is this the address?")
+        msg = bot.send_venue(message.chat.id, user.dest_lat, user.dest_lng,
+                            user.dest_title, user.dest_addr, reply_markup=markup)
+        bot.register_next_step_handler(msg, process_order)
     except Exception as e:
         msg = bot.send_message(message.chat.id, "oooops! please try again")
         bot.register_next_step_handler(msg, process_destination)
 
 
-
-def number_people(message):
-    response = message.text
-    if (response == "Yes"):
-        markup = telebot.types.ReplyKeyboardMarkup(row_width=1, one_time_keyboard=True)
-        itembtn1 = telebot.types.KeyboardButton("1")
-        itembtn2 = telebot.types.KeyboardButton("2")
-        itembtn3 = telebot.types.KeyboardButton("3 to 4")
-        itembtn4 = telebot.types.KeyboardButton("More than 4")
-        markup.add(itembtn1, itembtn2, itembtn3, itembtn4)
-        msg = bot.send_message(message.chat.id, "How many seats do you need?", reply_markup=markup)
-        bot.register_next_step_handler(msg, process_order)
-
-    else:
-        msg = bot.send_message(message.chat.id, "Hmmm.. Can you retype your destination?")
-        bot.register_next_step_handler(msg, process_destination)
-
-
 def process_order(message):
     response = message.text
-    user = user_dict[message.chat.id]
-    user.num_seat = int(response)
-    user.get_uber_info()
-    msg = bot.send_message(message.chat.id, "Uber:  ETA {} minutes - Price range {}".format(user.uber_ETA, user.U_price_range))
+    if (response == "Yes"):
+        user = user_dict[message.chat.id]
+        uber_info = user.get_uber_info()
+        uber_emoji = emoji.emojize(":black_medium_square:")
+        uberPool_info = uber_emoji + "<b>Uber {}</b>\nArrives in {} minutes\nPrice range from {}".format("Pool", uber_info["UberPool_ETA"], uber_info["UberPool_Price"])
+        uberX_info = uber_emoji + "<b>Uber {}</b>\nArrives in {} minutes\nPrice range from {}".format("X", uber_info["UberX_ETA"], uber_info["UberX_Price"])
 
+
+        lyft_info = user.get_lyft_info()
+        lyft_emoji = emoji.emojize(":red_circle:")
+        lyftLine_info = lyft_emoji + " <b>Lyft {}</b>\nArrives in {} minutes\nPrice range from {}".format("Line", lyft_info["LyftLine_ETA"], lyft_info["LyftLine_Price"])
+        LYFT_INFO = lyft_emoji + " <b>Lyft</b>\nArrives in {} minutes\nPrice range from {}".format(lyft_info["Lyft_ETA"], lyft_info["Lyft_Price"])
+        msg = bot.send_message(message.chat.id, uberPool_info + "\n\n" + uberX_info + "\n\n" + lyftLine_info + "\n\n" + LYFT_INFO, parse_mode="HTML")
+
+    else:
+        msg = bot.send_message(message.chat.id, "Hmmm... Can you retype your destination?")
+        bot.register_next_step_handler(msg, process_destination)
 
 
 
